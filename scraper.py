@@ -37,7 +37,7 @@ def get_proxy():
         "https": proxy
     }
 
-def fetch_html(url: str):
+def fetch_html(url: str, timeout_seconds: int = None, allow_browser_fallback: bool = None):
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
         "Accept-Language": "en-US,en;q=0.9",
@@ -53,8 +53,11 @@ def fetch_html(url: str):
     if DELAY_MAX > 0:
         time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
+    request_timeout = timeout_seconds or HTTP_TIMEOUT_SECONDS
+    browser_fallback_enabled = ENABLE_BROWSER_FALLBACK if allow_browser_fallback is None else allow_browser_fallback
+
     try:
-        resp = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT_SECONDS, proxies=proxy)
+        resp = requests.get(url, headers=headers, timeout=request_timeout, proxies=proxy)
         status_code = resp.status_code
         if resp.status_code == 200:
             html = resp.text
@@ -66,7 +69,7 @@ def fetch_html(url: str):
     if (
         (not html or "captcha" in html.lower() or "rate limited" in html.lower())
         and PLAYWRIGHT_AVAILABLE
-        and ENABLE_BROWSER_FALLBACK
+        and browser_fallback_enabled
     ):
         html = fetch_with_browser(url, proxy_url=proxy["http"] if proxy else None)
         used_browser = bool(html)
@@ -221,6 +224,99 @@ def rank_sources(source_results: list):
     ranked = sorted(source_results, key=source_score, reverse=True)
     return ranked
 
+
+def _empty_result(source: str):
+    return {
+        "source": source,
+        "resolved_url": "",
+        "property": {},
+        "comps": [],
+        "raw_found": False,
+        "status_code": None,
+        "used_browser": False,
+    }
+
+
+def try_redfin_lite(address: str):
+    url = find_redfin_property_url(address)
+    if not url:
+        return _empty_result("redfin")
+
+    result = fetch_html(url, timeout_seconds=4, allow_browser_fallback=False)
+    if not result["html"]:
+        out = _empty_result("redfin")
+        out["resolved_url"] = url
+        out["status_code"] = result.get("status_code")
+        return out
+
+    parsed = parse_redfin(result["html"])
+    return {
+        "source": "redfin",
+        "resolved_url": url,
+        "property": parsed.get("property", {}),
+        "comps": parsed.get("comps", []),
+        "raw_found": bool(parsed.get("property")),
+        "status_code": result.get("status_code"),
+        "used_browser": False,
+    }
+
+
+def try_realtor_lite(address: str):
+    url = find_realtor_property_url(address)
+    if not url:
+        return _empty_result("realtor")
+
+    result = fetch_html(url, timeout_seconds=4, allow_browser_fallback=False)
+    if not result["html"]:
+        out = _empty_result("realtor")
+        out["resolved_url"] = url
+        out["status_code"] = result.get("status_code")
+        return out
+
+    parsed = parse_realtor(result["html"])
+    return {
+        "source": "realtor",
+        "resolved_url": url,
+        "property": parsed.get("property", {}),
+        "comps": parsed.get("comps", []),
+        "raw_found": bool(parsed.get("property")),
+        "status_code": result.get("status_code"),
+        "used_browser": False,
+    }
+
+
+def _run_sources(property_address: str, condition: str, source_functions: list):
+    sources = []
+
+    for source_fn in source_functions:
+        try:
+            result = source_fn(property_address)
+        except Exception:
+            result = _empty_result(source_fn.__name__.replace("try_", ""))
+
+        sources.append(result)
+
+        if result.get("property"):
+            best_source, subject, comps = merge_best_data(sources)
+            return build_output_bundle(
+                property_address=property_address,
+                condition=condition,
+                subject=subject,
+                comps=comps,
+                source_results=sources,
+                best_source=best_source,
+            )
+
+    best_source, subject, comps = merge_best_data(sources)
+    return build_output_bundle(
+        property_address=property_address,
+        condition=condition,
+        subject=subject,
+        comps=comps,
+        source_results=sources,
+        best_source=best_source,
+    )
+
 def merge_best_data(source_results: list):
     ranked = rank_sources(source_results)
     best = ranked[0] if ranked else {}
@@ -260,42 +356,9 @@ def merge_best_data(source_results: list):
     return best, subject, all_comps
 
 def scrape_property_bundle(property_address: str, condition: str = "Good"):
-    source_functions = [try_redfin, try_realtor, try_zillow]
-    sources = []
+    return _run_sources(property_address, condition, [try_redfin, try_realtor, try_zillow])
 
-    for source_fn in source_functions:
-        try:
-            result = source_fn(property_address)
-        except Exception:
-            result = {
-                "source": source_fn.__name__.replace("try_", ""),
-                "resolved_url": "",
-                "property": {},
-                "comps": [],
-                "raw_found": False,
-                "status_code": None,
-                "used_browser": False,
-            }
 
-        sources.append(result)
-
-        if result.get("property"):
-            best_source, subject, comps = merge_best_data(sources)
-            return build_output_bundle(
-                property_address=property_address,
-                condition=condition,
-                subject=subject,
-                comps=comps,
-                source_results=sources,
-                best_source=best_source,
-            )
-
-    best_source, subject, comps = merge_best_data(sources)
-    return build_output_bundle(
-        property_address=property_address,
-        condition=condition,
-        subject=subject,
-        comps=comps,
-        source_results=sources,
-        best_source=best_source,
-    )
+def scrape_property_bundle_lite(property_address: str, condition: str = "Good"):
+    # Zapier-focused fast path: no browser fallback and only two fast sources.
+    return _run_sources(property_address, condition, [try_redfin_lite, try_realtor_lite])
