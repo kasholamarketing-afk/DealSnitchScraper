@@ -3,10 +3,12 @@ from pydantic import BaseModel
 from typing import Optional
 from scraper import scrape_property_bundle
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 app = FastAPI()
 
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "dsc_live_key_7a3f2e1b9c4d8e5f6a2b1c3d4e5f6a7b")
+SCRAPE_REQUEST_TIMEOUT_SECONDS = int(os.getenv("SCRAPE_REQUEST_TIMEOUT_SECONDS", "25"))
 
 class ScrapeRequest(BaseModel):
     property_address: str
@@ -24,10 +26,19 @@ def scrape(payload: ScrapeRequest, x_api_key: str = Header(default="")):
     if not payload.property_address:
         raise HTTPException(status_code=400, detail="property_address is required")
 
-    return scrape_property_bundle(
-        property_address=payload.property_address,
-        condition=payload.condition or "Good"
-    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            scrape_property_bundle,
+            payload.property_address,
+            payload.condition or "Good",
+        )
+        try:
+            return future.result(timeout=SCRAPE_REQUEST_TIMEOUT_SECONDS)
+        except FutureTimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail="Scrape timed out. Try again or reduce the number of sources.",
+            )
 
 if __name__ == "__main__":
     import uvicorn

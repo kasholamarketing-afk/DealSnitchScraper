@@ -2,6 +2,7 @@ import json
 import time
 import random
 import requests
+import os
 
 from parsers import parse_redfin, parse_realtor, parse_zillow
 from url_finders import find_redfin_property_url, find_realtor_property_url, find_zillow_property_url
@@ -12,6 +13,13 @@ try:
     PLAYWRIGHT_AVAILABLE = True
 except Exception:
     PLAYWRIGHT_AVAILABLE = False
+
+FAST_MODE = os.getenv("SCRAPER_FAST_MODE", "1") == "1"
+ENABLE_BROWSER_FALLBACK = os.getenv("SCRAPER_ENABLE_BROWSER", "0") == "1"
+HTTP_TIMEOUT_SECONDS = int(os.getenv("SCRAPER_HTTP_TIMEOUT", "8" if FAST_MODE else "20"))
+BROWSER_TIMEOUT_MS = int(os.getenv("SCRAPER_BROWSER_TIMEOUT_MS", "12000" if FAST_MODE else "45000"))
+DELAY_MIN = float(os.getenv("SCRAPER_DELAY_MIN", "0.1" if FAST_MODE else "1.2"))
+DELAY_MAX = float(os.getenv("SCRAPER_DELAY_MAX", "0.4" if FAST_MODE else "2.8"))
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
@@ -42,10 +50,11 @@ def fetch_html(url: str):
     status_code = None
     html = ""
 
-    time.sleep(random.uniform(1.2, 2.8))
+    if DELAY_MAX > 0:
+        time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
     try:
-        resp = requests.get(url, headers=headers, timeout=20, proxies=proxy)
+        resp = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT_SECONDS, proxies=proxy)
         status_code = resp.status_code
         if resp.status_code == 200:
             html = resp.text
@@ -54,7 +63,11 @@ def fetch_html(url: str):
     except Exception:
         html = ""
 
-    if (not html or "captcha" in html.lower() or "rate limited" in html.lower()) and PLAYWRIGHT_AVAILABLE:
+    if (
+        (not html or "captcha" in html.lower() or "rate limited" in html.lower())
+        and PLAYWRIGHT_AVAILABLE
+        and ENABLE_BROWSER_FALLBACK
+    ):
         html = fetch_with_browser(url, proxy_url=proxy["http"] if proxy else None)
         used_browser = bool(html)
 
@@ -79,8 +92,8 @@ def fetch_with_browser(url: str, proxy_url: str = None):
                 user_agent=random.choice(USER_AGENTS),
                 locale="en-US"
             )
-            page.goto(url, timeout=45000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            page.goto(url, timeout=BROWSER_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.wait_for_timeout(1200 if FAST_MODE else 3000)
             html = page.content()
             browser.close()
             return html
@@ -247,19 +260,42 @@ def merge_best_data(source_results: list):
     return best, subject, all_comps
 
 def scrape_property_bundle(property_address: str, condition: str = "Good"):
-    sources = [
-        try_redfin(property_address),
-        try_realtor(property_address),
-        try_zillow(property_address)
-    ]
+    source_functions = [try_redfin, try_realtor, try_zillow]
+    sources = []
+
+    for source_fn in source_functions:
+        try:
+            result = source_fn(property_address)
+        except Exception:
+            result = {
+                "source": source_fn.__name__.replace("try_", ""),
+                "resolved_url": "",
+                "property": {},
+                "comps": [],
+                "raw_found": False,
+                "status_code": None,
+                "used_browser": False,
+            }
+
+        sources.append(result)
+
+        if result.get("property"):
+            best_source, subject, comps = merge_best_data(sources)
+            return build_output_bundle(
+                property_address=property_address,
+                condition=condition,
+                subject=subject,
+                comps=comps,
+                source_results=sources,
+                best_source=best_source,
+            )
 
     best_source, subject, comps = merge_best_data(sources)
-
     return build_output_bundle(
         property_address=property_address,
         condition=condition,
         subject=subject,
         comps=comps,
         source_results=sources,
-        best_source=best_source
+        best_source=best_source,
     )
