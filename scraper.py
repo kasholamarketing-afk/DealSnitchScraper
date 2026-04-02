@@ -27,6 +27,11 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
 ]
 
+
+def _is_redfin_url(value: str) -> bool:
+    text = (value or "").strip().lower()
+    return text.startswith("http") and "redfin.com" in text
+
 def get_proxy():
     import os
     proxy = os.getenv("SCRAPER_PROXY", "").strip()
@@ -104,7 +109,7 @@ def fetch_with_browser(url: str, proxy_url: str = None):
         return ""
 
 def try_redfin(address: str):
-    url = find_redfin_property_url(address)
+    url = address.strip() if _is_redfin_url(address) else find_redfin_property_url(address)
     if not url:
         return {
             "source": "redfin",
@@ -238,7 +243,7 @@ def _empty_result(source: str):
 
 
 def try_redfin_lite(address: str):
-    url = find_redfin_property_url(address)
+    url = address.strip() if _is_redfin_url(address) else find_redfin_property_url(address)
     if not url:
         return _empty_result("redfin")
 
@@ -356,9 +361,13 @@ def merge_best_data(source_results: list):
     return best, subject, all_comps
 
 def scrape_property_bundle(property_address: str, condition: str = "Good"):
+    if _is_redfin_url(property_address):
+        return _run_sources(property_address, condition, [try_redfin])
     return _run_sources(property_address, condition, [try_redfin, try_realtor, try_zillow])
 
 
 def scrape_property_bundle_lite(property_address: str, condition: str = "Good"):
     # Zapier-focused fast path: no browser fallback and only two fast sources.
+    if _is_redfin_url(property_address):
+        return _run_sources(property_address, condition, [try_redfin_lite])
     return _run_sources(property_address, condition, [try_redfin_lite, try_realtor_lite])

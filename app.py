@@ -13,7 +13,8 @@ SCRAPE_REQUEST_TIMEOUT_SECONDS = int(os.getenv("SCRAPE_REQUEST_TIMEOUT_SECONDS",
 SCRAPE_LITE_TIMEOUT_SECONDS = int(os.getenv("SCRAPE_LITE_TIMEOUT_SECONDS", "10"))
 
 class ScrapeRequest(BaseModel):
-    property_address: str
+    property_address: Optional[str] = None
+    redfin_url: Optional[str] = None
     condition: Optional[str] = None
 
 
@@ -32,15 +33,17 @@ def scrape(payload: ScrapeRequest, x_api_key: str = Header(default="")):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     property_address = _clean_text(payload.property_address)
-    if not property_address:
-        raise HTTPException(status_code=400, detail="property_address is required")
+    redfin_url = _clean_text(payload.redfin_url)
+    query_input = redfin_url or property_address
+    if not query_input:
+        raise HTTPException(status_code=400, detail="redfin_url or property_address is required")
 
     condition = _clean_text(payload.condition) or "Good"
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             scrape_property_bundle,
-            property_address,
+            query_input,
             condition,
         )
         try:
@@ -49,7 +52,7 @@ def scrape(payload: ScrapeRequest, x_api_key: str = Header(default="")):
         except FutureTimeoutError:
             # Fail-soft for webhook callers: return any data we can get quickly.
             fallback = scrape_property_bundle_lite(
-                property_address=payload.property_address,
+                property_address=query_input,
                 condition=condition,
             )
             fallback.setdefault("meta", {})
@@ -65,15 +68,17 @@ def scrape_lite(payload: ScrapeRequest, x_api_key: str = Header(default="")):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     property_address = _clean_text(payload.property_address)
-    if not property_address:
-        raise HTTPException(status_code=400, detail="property_address is required")
+    redfin_url = _clean_text(payload.redfin_url)
+    query_input = redfin_url or property_address
+    if not query_input:
+        raise HTTPException(status_code=400, detail="redfin_url or property_address is required")
 
     condition = _clean_text(payload.condition) or "Good"
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             scrape_property_bundle_lite,
-            property_address,
+            query_input,
             condition,
         )
         try:
@@ -84,7 +89,7 @@ def scrape_lite(payload: ScrapeRequest, x_api_key: str = Header(default="")):
         except FutureTimeoutError:
             fallback_bundle = {
                 "subject": {
-                    "property_address": property_address,
+                    "property_address": query_input,
                     "property_type": "",
                     "beds": None,
                     "baths": None,
