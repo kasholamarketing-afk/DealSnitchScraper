@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 from typing import Optional
 from scraper import scrape_property_bundle, scrape_property_bundle_lite
+from utils import build_flat_response
 import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
@@ -27,23 +28,26 @@ def scrape(payload: ScrapeRequest, x_api_key: str = Header(default="")):
     if not payload.property_address:
         raise HTTPException(status_code=400, detail="property_address is required")
 
+    condition = payload.condition or "Good"
+
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             scrape_property_bundle,
             payload.property_address,
-            payload.condition or "Good",
+            condition,
         )
         try:
-            return future.result(timeout=SCRAPE_REQUEST_TIMEOUT_SECONDS)
+            bundle = future.result(timeout=SCRAPE_REQUEST_TIMEOUT_SECONDS)
+            return build_flat_response(bundle, condition)
         except FutureTimeoutError:
             # Fail-soft for webhook callers: return any data we can get quickly.
             fallback = scrape_property_bundle_lite(
                 property_address=payload.property_address,
-                condition=payload.condition or "Good",
+                condition=condition,
             )
             fallback.setdefault("meta", {})
             fallback["meta"]["scraper_status"] = "partial_timeout_fallback"
-            return fallback
+            return build_flat_response(fallback, condition)
 
 
 @app.post("/scrape-lite")
@@ -54,19 +58,21 @@ def scrape_lite(payload: ScrapeRequest, x_api_key: str = Header(default="")):
     if not payload.property_address:
         raise HTTPException(status_code=400, detail="property_address is required")
 
+    condition = payload.condition or "Good"
+
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             scrape_property_bundle_lite,
             payload.property_address,
-            payload.condition or "Good",
+            condition,
         )
         try:
             result = future.result(timeout=SCRAPE_LITE_TIMEOUT_SECONDS)
             result.setdefault("meta", {})
             result["meta"]["mode"] = "lite"
-            return result
+            return build_flat_response(result, condition)
         except FutureTimeoutError:
-            return {
+            fallback_bundle = {
                 "subject": {
                     "property_address": payload.property_address,
                     "property_type": "",
@@ -84,13 +90,14 @@ def scrape_lite(payload: ScrapeRequest, x_api_key: str = Header(default="")):
                 },
                 "comps": [],
                 "meta": {
-                    "condition": payload.condition or "Good",
+                    "condition": condition,
                     "scraper_status": "timeout_no_data",
                     "mode": "lite",
                     "sources_checked": [],
                     "sources_with_data": [],
                 },
             }
+            return build_flat_response(fallback_bundle, condition)
 
 if __name__ == "__main__":
     import uvicorn
