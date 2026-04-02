@@ -16,24 +16,31 @@ class ScrapeRequest(BaseModel):
     property_address: str
     condition: Optional[str] = None
 
+
+def _clean_text(value: Optional[str]) -> str:
+    return (value or "").strip()
+
 @app.get("/")
 def health():
     return {"status": "ok"}
 
 @app.post("/scrape")
 def scrape(payload: ScrapeRequest, x_api_key: str = Header(default="")):
-    if SCRAPER_API_KEY and x_api_key != SCRAPER_API_KEY:
+    incoming_api_key = _clean_text(x_api_key)
+    expected_api_key = _clean_text(SCRAPER_API_KEY)
+    if expected_api_key and incoming_api_key != expected_api_key:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    if not payload.property_address:
+    property_address = _clean_text(payload.property_address)
+    if not property_address:
         raise HTTPException(status_code=400, detail="property_address is required")
 
-    condition = payload.condition or "Good"
+    condition = _clean_text(payload.condition) or "Good"
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             scrape_property_bundle,
-            payload.property_address,
+            property_address,
             condition,
         )
         try:
@@ -52,18 +59,21 @@ def scrape(payload: ScrapeRequest, x_api_key: str = Header(default="")):
 
 @app.post("/scrape-lite")
 def scrape_lite(payload: ScrapeRequest, x_api_key: str = Header(default="")):
-    if SCRAPER_API_KEY and x_api_key != SCRAPER_API_KEY:
+    incoming_api_key = _clean_text(x_api_key)
+    expected_api_key = _clean_text(SCRAPER_API_KEY)
+    if expected_api_key and incoming_api_key != expected_api_key:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    if not payload.property_address:
+    property_address = _clean_text(payload.property_address)
+    if not property_address:
         raise HTTPException(status_code=400, detail="property_address is required")
 
-    condition = payload.condition or "Good"
+    condition = _clean_text(payload.condition) or "Good"
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             scrape_property_bundle_lite,
-            payload.property_address,
+            property_address,
             condition,
         )
         try:
@@ -74,7 +84,7 @@ def scrape_lite(payload: ScrapeRequest, x_api_key: str = Header(default="")):
         except FutureTimeoutError:
             fallback_bundle = {
                 "subject": {
-                    "property_address": payload.property_address,
+                    "property_address": property_address,
                     "property_type": "",
                     "beds": None,
                     "baths": None,
